@@ -5,7 +5,7 @@ using Markdown
 using InteractiveUtils
 
 # ╔═╡ f4d655e4-b086-11ee-03c0-3352c5ccfc74
-using RxInfer, Random, StatsPlots, BenchmarkTools, ThreadsX
+using RxInfer, Random, StatsPlots, BenchmarkTools, ThreadsX, LinearAlgebra
 
 # ╔═╡ e7194fdc-2178-48d3-a042-5f7671ea1dc2
 module Parallel
@@ -25,8 +25,21 @@ begin
 	prior = Beta(2.0, 6.0)
 end
 
+# ╔═╡ c36d6a49-fefa-4272-9c6d-25ab51aad525
+struct MyCustomRule 
+	size::Int
+end
+
+# ╔═╡ 278cad60-6fdc-43c5-87d4-6efb8f143f2a
+@rule Bernoulli(:p, Marginalisation) (q_out::PointMass, meta::MyCustomRule) = begin
+    @logscale -log(2)
+    r = mean(q_out)
+	s = det(inv(rand(meta.size, meta.size))) / 10^8
+    return Beta(one(r) + r, 2one(r) - r)
+end
+
 # ╔═╡ d29be3d4-f41d-4070-8346-ae67412d75bb
-@model function coin_model(n, prior, prod_strategy, pipeline)
+@model function coin_model(n, prior, prod_strategy, pipeline, meta)
 
     y = datavar(Float64, n)
 	θ = randomvar() where { prod_strategy = prod_strategy }
@@ -34,24 +47,27 @@ end
     θ ~ prior
 
     for i in 1:n
-        y[i] ~ Bernoulli(θ) where { pipeline = pipeline }
+        y[i] ~ Bernoulli(θ) where { pipeline = pipeline, meta = meta }
     end
 
 end
 
 # ╔═╡ fcbdb026-c9f5-4d0a-aca0-9545414d8e82
-function run_test(prod_strategy, pipeline)
+function run_test(prod_strategy, pipeline, n)
 	return infer(
-	    model = coin_model(length(dataset), prior, prod_strategy, pipeline),
+	    model = coin_model(length(dataset), prior, prod_strategy, pipeline, MyCustomRule(n)),
 	    data  = (y = dataset, ),
 		callbacks = (after_iteration = Parallel.after_iteration_cb, ),
 	)
 end
 
+# ╔═╡ 9bea0460-b169-4984-a31e-b01c6d72533c
+size = 200
+
 # ╔═╡ 2af651d1-70dc-48a5-9b2c-829c44e36db0
 begin
-	result = run_test(nothing, nothing)
-	result_parallel = run_test(Parallel.CustomProdStrategy(Parallel.custom_prod), Parallel.ThreadsPipelineStage())
+	result = run_test(nothing, nothing, 1)
+	result_parallel = run_test(Parallel.CustomProdStrategy(Parallel.custom_prod), Parallel.ThreadsPipelineStage(), 1)
 end
 
 # ╔═╡ 39b963d1-77ed-487a-b870-24c251fd1dd1
@@ -61,16 +77,20 @@ begin
 	plot!(result_parallel.posteriors[:θ], label = "Posterior parallel", fill = 0, fillalpha = 0.2)
 end
 
+# ╔═╡ 9ad5ad30-a715-408c-bdd0-75df210e134f
+@benchmark @call_rule Bernoulli(:p, Marginalisation) (q_out = PointMass(1), meta = MyCustomRule(size))
+
 # ╔═╡ 87bb72ab-afa9-44a3-9268-4673ee437815
-@benchmark run_test(nothing, nothing)
+@benchmark run_test(nothing, nothing, size)
 
 # ╔═╡ c52cc364-692d-4a2f-91ba-c81108d2a874
-@benchmark run_test(Parallel.CustomProdStrategy(Parallel.custom_prod), Parallel.ThreadsPipelineStage())
+@benchmark run_test(Parallel.CustomProdStrategy(Parallel.custom_prod), Parallel.ThreadsPipelineStage(), size)
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 RxInfer = "86711068-29c9-4ff7-b620-ae75d7495b3d"
 StatsPlots = "f3b207a7-027a-5e70-b257-86293d7955fd"
@@ -89,7 +109,7 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.10.0"
 manifest_format = "2.0"
-project_hash = "cb1be04078c3320db048a1bcf80dee938185fe10"
+project_hash = "efcb737be036126eb12e3a76f62c42ef4d25ddc3"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1956,10 +1976,14 @@ version = "1.4.1+1"
 # ╠═e7194fdc-2178-48d3-a042-5f7671ea1dc2
 # ╠═41bc4e05-2633-4fd3-85c4-b637436089af
 # ╠═175ad705-7ae1-410e-95dc-3485677094df
+# ╠═c36d6a49-fefa-4272-9c6d-25ab51aad525
+# ╠═278cad60-6fdc-43c5-87d4-6efb8f143f2a
 # ╠═d29be3d4-f41d-4070-8346-ae67412d75bb
 # ╠═fcbdb026-c9f5-4d0a-aca0-9545414d8e82
+# ╠═9bea0460-b169-4984-a31e-b01c6d72533c
 # ╠═2af651d1-70dc-48a5-9b2c-829c44e36db0
 # ╟─39b963d1-77ed-487a-b870-24c251fd1dd1
+# ╠═9ad5ad30-a715-408c-bdd0-75df210e134f
 # ╠═87bb72ab-afa9-44a3-9268-4673ee437815
 # ╠═c52cc364-692d-4a2f-91ba-c81108d2a874
 # ╟─00000000-0000-0000-0000-000000000001
