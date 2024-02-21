@@ -1,4 +1,4 @@
-using RxInfer, BenchmarkTools, LinearAlgebra
+using RxInfer, BenchmarkTools, LinearAlgebra, ThreadsX
 
 # A `PromisedMessage` holds a promise of the message computation
 # Use `as_message` function to block and wait for the result.
@@ -12,13 +12,13 @@ function parallelmapreduce(f, op, x)
 	if m < 2 || x isa Tuple
 		return mapreduce(f, op, x)
 	end
-	N = min(Threads.nthreads(:interactive), div(m, 2))
+	N = min(Threads.nthreads(), div(m, 2))
 
 	len = div(m, N)
-	results = Array{eltype(x)}(undef, N)
+	results = Vector{Message}(undef, N)
 
 	@sync for tid in 1:N
-		Threads.@spawn :interactive begin
+		Threads.@spawn begin
 			if tid == N
 				domain = ((tid - 1) * len + 1):m
 			else
@@ -77,18 +77,22 @@ function fifo_prod(strategy, _, _)
 	return (messages) -> parallelmapreduce(as_message, ×, messages)
 end
 
+function fifo_prod_threadsx(strategy, _, _)
+	× = (left, right) -> ReactiveMP.multiply_messages(strategy, left, right)
+	return (messages) -> ThreadsX.mapreduce(as_message, ×, messages; init = Message(missing, false, false, nothing))
+end
+
 function isready(message)
 	if !(message isa PromisedMessage)
 		return true
 	end
-
 	return istaskdone(message.task)
 end
 
 function check!(ready, messages)
 	for i in eachindex(ready)
 		if !ready[i]
-			ready[i] = isready(messages)
+			ready[i] = isready(messages[i])
 		end
 	end
 end
@@ -103,7 +107,7 @@ function frfo_prod(strategy, _, _)
 		s = length(messages)
 		res = Message(missing, false, false, nothing)
 		ready = Vector{Bool}(undef, s)
-		used = zeros(Bool, s)
+		used = falses(s)
 		check!(ready, messages)
 
 		while sum(used) < s
