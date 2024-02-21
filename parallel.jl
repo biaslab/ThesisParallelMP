@@ -1,4 +1,4 @@
-using RxInfer, BenchmarkTools
+using RxInfer, BenchmarkTools, LinearAlgebra
 
 # A `PromisedMessage` holds a promise of the message computation
 # Use `as_message` function to block and wait for the result.
@@ -8,20 +8,22 @@ end
 
 # Split the mapreduce work over the available threads.
 function parallelmapreduce(f, op, x)
-	if length(x) < Threads.nthreads() * 2
+	m = length(x)
+	if m < 2 || x isa Tuple
 		return mapreduce(f, op, x)
 	end
+	N = min(Threads.nthreads(:interactive), div(m, 2))
 
-	results = Array{eltype(x)}(undef, Threads.nthreads())
-	@sync for tid in 1:Threads.nthreads()
+	len = div(m, N)
+	results = Array{eltype(x)}(undef, N)
+
+	@sync for tid in 1:N
 		Threads.@spawn :interactive begin
-			len = div(length(x), Threads.nthreads())
-
-			if tid == 1:Threads.nthreads()
-				len += length(x) % Threads.nthreads()
+			if tid == N
+				domain = ((tid - 1) * len + 1):m
+			else
+				domain = ((tid - 1) * len + 1):(tid * len)
 			end
-
-			domain = ((tid-1)*len +1):tid*len
 			results[tid] = mapreduce(f, op, view(x, domain))
 		end
 	end
@@ -29,20 +31,22 @@ function parallelmapreduce(f, op, x)
 end
 
 function parallelreduce(op, x)
-	if length(x) < Threads.nthreads() * 2
+	m = length(x)
+	if m < 2
 		return reduce(op, x)
 	end
+	N = min(Threads.nthreads(:interactive), div(m, 2))
 
-	results = Array{eltype(x)}(undef, Threads.nthreads())
-	@sync for tid in 1:Threads.nthreads()
-		Threads.@spawn begin
-			len = div(length(x), Threads.nthreads())
+	len = div(m, N)
+	results = Array{eltype(x)}(undef, N)
 
-			if tid == 1:Threads.nthreads()
-				len += length(x) % Threads.nthreads()
+	@sync for tid in 1:N
+		Threads.@spawn :interactive begin
+			if tid == N
+				domain = ((tid - 1) * len + 1):m
+			else
+				domain = ((tid - 1) * len + 1):(tid * len)
 			end
-
-			domain = ((tid-1)*len +1):tid*len
 			results[tid] = reduce(op, view(x, domain))
 		end
 	end
@@ -51,9 +55,6 @@ end
 
 # The `as_message` for the `PromisedMessage` blocks until available
 ReactiveMP.as_message(promised::PromisedMessage) = fetch(promised.task)
-ReactiveMP.as_marginal(promised::PromisedMessage) = as_marginal(fetch(promised.task))
-ReactiveMP.setcache!(::ReactiveMP.EqualityLeftOutbound, node::ReactiveMP.EqualityNode, cache::PromisedMessage)  = node.cache_left = as_message(cache)
-ReactiveMP.setcache!(::ReactiveMP.EqualityRightOutbound, node::ReactiveMP.EqualityNode, cache::PromisedMessage) = node.cache_right = as_message(cache)
 
 # This function takes an event and casts it to a message
 # In a separate thread
@@ -71,65 +72,63 @@ function as_promised_interactive(event)
 	return PromisedMessage(task)
 end
 
-function blocking_parallel_prod(strategy, _, _)
+function fifo_prod(strategy, _, _)
 	× = (left, right) -> ReactiveMP.multiply_messages(strategy, left, right)
 	return (messages) -> parallelmapreduce(as_message, ×, messages)
 end
 
-function promised_parallel_prod(strategy, _, _)
-	× = (left, right) -> ReactiveMP.multiply_messages(strategy, left, right)
-	return (messages) -> begin
-		task = Threads.@spawn :interactive begin
-			iparallelmapreduce(as_message, ×, messages)
+function isready(message)
+	if !(message isa PromisedMessage)
+		return true
+	end
+
+	return istaskdone(message.task)
+end
+
+function check!(ready, messages)
+	for i in eachindex(ready)
+		if !ready[i]
+			ready[i] = isready(messages)
 		end
-		return PromisedMessage(task)
 	end
 end
 
-function done_first_parallel_prod(strategy, _, _)
+function frfo_prod(strategy, _, _)
 	× = (left, right) -> ReactiveMP.multiply_messages(strategy, left, right)
 	return (messages) -> begin
 		if messages isa Tuple
-			return parallelmapreduce(as_message, ×, messages)
-		end
-	 	ispromised = map((msg)->msg isa PromisedMessage, messages)
-		variational = view(messages, .!ispromised)
-		promised = view(messages, ispromised)
-		isdone = map(istaskdone, getfield.(promised, :task))
-		done = view(promised, isdone)
-		notdone = view(promised, .!isdone)
-		first = true
-		toreduce = vcat(variational, done)
-
-		if length(toreduce) > 0
-			res = parallelmapreduce(as_message, ×, toreduce)
-			first = false
+			return mapreduce(as_message, ×, messages)
 		end
 
-		while length(notdone) > 0
-			isdone = map(istaskdone, getfield.(notdone, :task))
-			done = view(notdone, isdone)
-			notdone = view(notdone, .!isdone)
-			if first & length(done) > 0
-				res = parallelmapreduce(as_message, ×, vcat(variational, done))
-				first = false
-			else
-				if length(done) > 0
-					res = vcat(res, parallelmapreduce(as_message, ×, done))
-				end
+		s = length(messages)
+		res = Message(missing, false, false, nothing)
+		ready = Vector{Bool}(undef, s)
+		used = zeros(Bool, s)
+		check!(ready, messages)
+
+		while sum(used) < s
+			if sum(ready) > sum(used)
+				res = ×(res, parallelmapreduce(as_message, ×, view(messages, ready .& .!used)))
+				used = ready
 			end
+			check!(ready, messages)
 		end
 
-		if res isa Message
-			return res
-		end
-
-		return parallelreduce(×, res)
+		return res
 	end
 end
 
 function after_iteration_cb(model, iteration)
 	return nothing
+end
+
+struct MyCustomProd
+    size::Int
+end
+
+function RxInfer.BayesBase.prod(custom::MyCustomProd, left, right)
+	s = det(inv(rand(custom.size, custom.size))) / 10^8
+    return prod(GenericProd(), left, right)
 end
 
 # Threads pipeline stage uses the `PromisedMessage` to compute messages
