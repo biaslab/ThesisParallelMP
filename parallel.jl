@@ -6,6 +6,11 @@ struct PromisedMessage{T} <: ReactiveMP.AbstractMessage
 	task::T
 end
 
+mutable struct ChanneledMessage{T} <: ReactiveMP.AbstractMessage
+	channel::T
+	cached::Any
+end
+
 # Split the mapreduce work over the available threads.
 function parallelmapreduce(f, op, x)
 	m = length(x)
@@ -55,6 +60,13 @@ end
 
 # The `as_message` for the `PromisedMessage` blocks until available
 ReactiveMP.as_message(promised::PromisedMessage) = fetch(promised.task)
+
+function ReactiveMP.as_message(channeled::ChanneledMessage) 
+	if ismissing(channeled.cached)
+		channeled.cached = take!(channeled.channel)
+	end
+	return channeled.cached
+end
 
 # This function takes an event and casts it to a message
 # In a separate thread
@@ -139,6 +151,9 @@ end
 # in separate threads
 struct ThreadsPipelineStage <: ReactiveMP.AbstractPipelineStage end
 struct IThreadsPipelineStage <: ReactiveMP.AbstractPipelineStage end
+struct ThreadsReusingPipelineStage{I} <: ReactiveMP.AbstractPipelineStage 
+	initial::I
+end
 
 function ReactiveMP.apply_pipeline_stage(::ThreadsPipelineStage, factornode, tag, stream)
 	return stream |> map(eltype(stream), as_promised)
@@ -146,4 +161,16 @@ end
 
 function ReactiveMP.apply_pipeline_stage(::IThreadsPipelineStage, factornode, tag, stream)
 	return stream |> map(eltype(stream), as_promised_interactive)
+end
+
+function ReactiveMP.apply_pipeline_stage(pipeline::ThreadsReusingPipelineStage, factornode, tag, stream)
+	channel = Channel{Any}(1)
+	put!(channel, Message(pipeline.initial, false, false, nothing))
+	callback = (event) -> begin 
+		Threads.@spawn begin
+			put!(channel, as_message(event))
+		end
+		return ChanneledMessage(channel, missing)
+	end
+	return stream |> map(eltype(stream), callback)
 end
