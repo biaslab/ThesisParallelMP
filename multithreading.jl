@@ -1,4 +1,4 @@
-using RxInfer, BenchmarkTools, LinearAlgebra
+using RxInfer
 
 # A `PromisedMessage` holds a promise of the message computation
 # Use `as_message` function to block and wait for the result.
