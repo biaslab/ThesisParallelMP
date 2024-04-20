@@ -1,4 +1,4 @@
-using RxInfer, BenchmarkTools, LinearAlgebra, ThreadsX
+using RxInfer, BenchmarkTools, LinearAlgebra
 
 # A `PromisedMessage` holds a promise of the message computation
 # Use `as_message` function to block and wait for the result.
@@ -7,6 +7,11 @@ struct PromisedMessage{T} <: ReactiveMP.AbstractMessage
 end
 
 mutable struct ChanneledMessage{T} <: ReactiveMP.AbstractMessage
+	channel::T
+	cached::Any
+end
+
+mutable struct ChanneledMessages{T} <: ReactiveMP.AbstractMessage
 	channel::T
 	cached::Any
 end
@@ -61,9 +66,22 @@ end
 # The `as_message` for the `PromisedMessage` blocks until available
 ReactiveMP.as_message(promised::PromisedMessage) = fetch(promised.task)
 
-function ReactiveMP.as_message(channeled::ChanneledMessage) 
+function ReactiveMP.as_message(channeled::ChanneledMessage)
 	if ismissing(channeled.cached)
 		channeled.cached = take!(channeled.channel)
+	end
+	return channeled.cached
+end
+
+function ReactiveMP.as_message(channeled::ChanneledMessages)
+	if ismissing(channeled.cached)
+		if Base.isready(channeled.channel)
+			while Base.isready(channeled.channel)
+				channeled.cached = take!(channeled.channel)
+			end
+		else
+			channeled.cached = take!(channeled.channel)
+		end
 	end
 	return channeled.cached
 end
@@ -89,12 +107,7 @@ function fifo_prod(strategy, _, _)
 	return (messages) -> parallelmapreduce(as_message, ×, messages)
 end
 
-function fifo_prod_threadsx(strategy, _, _)
-	× = (left, right) -> ReactiveMP.multiply_messages(strategy, left, right)
-	return (messages) -> ThreadsX.mapreduce(as_message, ×, messages; init = Message(missing, false, false, nothing))
-end
-
-function isready(message)
+function ismessageready(message)
 	if !(message isa PromisedMessage)
 		return true
 	end
@@ -104,7 +117,7 @@ end
 function check!(ready, messages)
 	for i in eachindex(ready)
 		if !ready[i]
-			ready[i] = isready(messages[i])
+			ready[i] = ismessageready(messages[i])
 		end
 	end
 end
@@ -142,16 +155,14 @@ struct MyCustomProd
     size::Int
 end
 
-function RxInfer.BayesBase.prod(custom::MyCustomProd, left, right)
-	s = det(inv(rand(custom.size, custom.size))) / 10^8
-    return prod(GenericProd(), left, right)
-end
-
 # Threads pipeline stage uses the `PromisedMessage` to compute messages
 # in separate threads
 struct ThreadsPipelineStage <: ReactiveMP.AbstractPipelineStage end
 struct IThreadsPipelineStage <: ReactiveMP.AbstractPipelineStage end
-struct ThreadsReusingPipelineStage{I} <: ReactiveMP.AbstractPipelineStage 
+struct ThreadsReusingPipelineStage{I} <: ReactiveMP.AbstractPipelineStage
+	initial::I
+end
+struct ThreadsSoftReusingPipelineStage{I} <: ReactiveMP.AbstractPipelineStage
 	initial::I
 end
 
@@ -166,11 +177,23 @@ end
 function ReactiveMP.apply_pipeline_stage(pipeline::ThreadsReusingPipelineStage, factornode, tag, stream)
 	channel = Channel{Any}(1)
 	put!(channel, Message(pipeline.initial, false, false, nothing))
-	callback = (event) -> begin 
+	callback = (event) -> begin
 		Threads.@spawn begin
 			put!(channel, as_message(event))
 		end
 		return ChanneledMessage(channel, missing)
+	end
+	return stream |> map(eltype(stream), callback)
+end
+
+function ReactiveMP.apply_pipeline_stage(pipeline::ThreadsSoftReusingPipelineStage, factornode, tag, stream)
+	channel = Channel{Any}(Inf)
+	put!(channel, Message(pipeline.initial, false, false, nothing))
+	callback = (event) -> begin
+		Threads.@spawn begin
+			put!(channel, as_message(event))
+		end
+		return ChanneledMessages(channel, missing)
 	end
 	return stream |> map(eltype(stream), callback)
 end
