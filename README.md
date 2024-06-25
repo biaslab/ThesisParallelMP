@@ -1,32 +1,47 @@
 # ThesisParallelMP
-This repository contains the code and results of the MSc graduation project of Mattia Vicari about parallel computing in message passing-based Bayesian inference programs
+
+This repository contains the code and results from Mattia Vicari’s MSc graduation project on parallel computing in message passing-based Bayesian inference programs.
 
 ## Setup
-In order to run successfully the different benchmarks the only requirements is to have Jupiter kernels with Julia 1.10.0.
 
-In order to create a Jupiter kernel with multiple threads for the multi-threading benchmarks the following commands should be used in the Julia REPL.
+To successfully run the benchmarks, the only requirement is to have Jupyter kernels with Julia 1.10. We recommend installing Julia using [juliaup](https://github.com/JuliaLang/juliaup), which is compatible with all major operating systems. Once Julia is installed, you need to install the IJulia package to create the necessary Jupyter kernels. Run the following commands in the Julia REPL:
 
-First we need to ensure that `IJulia` is installed and used.
 ```Julia
 ] add IJulia
 ```
 
-```Julia
-using IJulia
+For creating a Jupyter kernel with multiple threads for the multithreading benchmarks, use these commands in the Julia REPL:
+
+```julia
+julia> using IJulia
+
+julia> installkernel("Julia 6 Threads", env=Dic("JULIA_NUM_THREADS"=>"6"))
 ```
 
-Finally the kernel can be created with the desired number of threads (6 in the example).
-```Julia
-installkernel("Julia 6 Threads", env=Dic("JULIA_NUM_THREADS"=>"6"))
+## Setting up the environment
+
+Before running the experiments, it’s crucial to set up the environment. Execute the following commands in the Julia REPL:
+
+```julia
+] activate .
+] instantiate
 ```
 
-## Benchmarks run
+This ensures that all required packages are installed and the environment is ready for running the benchmarks.
 
-Once the desired Jupiter kernel is created all the benchmark notebooks in the `benchmarks-dirstibuted` and `benchmarks-multithreading` folders can be executed.
+## Running benchmarks
+
+Once the desired Jupyter kernel is created, execute all benchmark notebooks located in the `benchmarks-distributed` and `benchmarks-multithreading` folders. You can also do this from the Julia REPL with:
+
+```julia
+julia> using IJulia
+
+julia> notebook(dir = pwd()) # jupyterlab(dir = pwd())
+```
 
 ## High-quality pictures
 
-In the `hq-pictures` folder high-quality pictures of the report's plots can be found for better visualization.
+The `hq-pictures` folder contains high-quality images of the plots from the report for better visualization.
 
 ## Code
 
